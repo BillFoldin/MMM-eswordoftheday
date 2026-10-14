@@ -4,6 +4,10 @@
   "description": "",
   "main": "MMM-eswordoftheday.js",
   "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "echo 'Build successful'",
+    "lint": "node --check server.js node_helper.js MMM-eswordoftheday.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -12,5 +16,8 @@
   "dependencies": {
     "axios": "^0.21.1",
     "cheerio": "^1.0.0-rc.9"
+  },
+  "devDependencies": {
+    "express": "^5.3.0"
   }
 }

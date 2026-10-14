@@ -5,6 +5,7 @@ Module.register("MMM-eswordoftheday", {
     showExamples: true,
     showExampleTranslations: true,
     showAudio: true,
+    useSystemAudio: false, // Set to true to use Raspberry Pi native audio player (mpg123)
   },
 
   start: function () {
@@ -47,18 +48,30 @@ Module.register("MMM-eswordoftheday", {
       }
     }
 
+    // If configured to use native system audio on Raspberry Pi (e.g. mpg123)
+    if (this.config.useSystemAudio === true) {
+      this.sendSocketNotification("MMM-eswordoftheday-SYSTEM_SPEAK", {
+        audioData: audioDataUrl,
+        text: text,
+      })
+      setTimeout(stopSpeakingUi, text.length > 25 ? 4000 : 2500)
+      return
+    }
+
     // 1. PRIMARY: Base64 audio pre-rendered by node_helper (works directly on Raspberry Pi / Linux without client TTS engine)
     if (audioDataUrl && typeof audioDataUrl === "string" && audioDataUrl.startsWith("data:audio")) {
       try {
         const audio = new Audio(audioDataUrl)
         audio.onended = stopSpeakingUi
         audio.onerror = () => {
+          this.sendSocketNotification("MMM-eswordoftheday-SYSTEM_SPEAK", { audioData: audioDataUrl, text: text })
           this.fallbackSpeech(text, buttonElement)
         }
         const playPromise = audio.play()
         if (playPromise !== undefined) {
           playPromise.catch((err) => {
-            console.warn("[MMM-eswordoftheday] Direct audio playback error:", err)
+            console.warn("[MMM-eswordoftheday] Direct audio playback error, falling back to system audio:", err)
+            this.sendSocketNotification("MMM-eswordoftheday-SYSTEM_SPEAK", { audioData: audioDataUrl, text: text })
             this.fallbackSpeech(text, buttonElement)
           })
         }
@@ -69,6 +82,7 @@ Module.register("MMM-eswordoftheday", {
     }
 
     // 2. Secondary fallback
+    this.sendSocketNotification("MMM-eswordoftheday-SYSTEM_SPEAK", { audioData: audioDataUrl, text: text })
     this.fallbackSpeech(text, buttonElement)
   },
 
