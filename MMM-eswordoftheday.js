@@ -5,12 +5,13 @@ Module.register("MMM-eswordoftheday", {
     showExamples: true,
     showExampleTranslations: true,
     showAudio: true,
-    useSystemAudio: false, // Set to true to use Raspberry Pi native audio player (mpg123)
+    audioMode: "all", // "all", "browser", "system", "notification"
   },
 
   start: function () {
     Log.info(`Starting module: ${this.name}`)
     this.apiData = null
+    this.audioElement = null
     this.sendSocketNotification("MMM-eswordoftheday-GET_WORD", {})
     setInterval(() => {
       this.sendSocketNotification("MMM-eswordoftheday-GET_WORD", {})
@@ -27,7 +28,7 @@ Module.register("MMM-eswordoftheday", {
 
   socketNotificationReceived: function (notification, payload) {
     if (notification === "MMM-eswordoftheday-RETURN_WORD") {
-      Log.info("Received:", payload)
+      Log.info("Received Word of the Day:", payload)
       this.apiData = payload
       this.updateDom()
     }
@@ -37,7 +38,10 @@ Module.register("MMM-eswordoftheday", {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>`
   },
 
-  playAudio: function (audioDataUrl, text, buttonElement = null) {
+  /**
+   * Main audio handler supporting Browser Audio, System Audio (mpg123/espeak), and MMM-TTS broadcast
+   */
+  handlePlaySpeech: function (type, text, audioSource, buttonElement = null) {
     if (buttonElement) {
       buttonElement.classList.add("speaking")
     }
@@ -48,111 +52,55 @@ Module.register("MMM-eswordoftheday", {
       }
     }
 
-    // If configured to use native system audio on Raspberry Pi (e.g. mpg123)
-    if (this.config.useSystemAudio === true) {
-      this.sendSocketNotification("MMM-eswordoftheday-SYSTEM_SPEAK", {
-        audioData: audioDataUrl,
+    const mode = this.config.audioMode || "all"
+
+    // 1. Send MagicMirror Notification to other TTS modules (MMM-TTS, MMM-GoogleTTS)
+    if (mode === "all" || mode === "notification") {
+      this.sendNotification("MMM-TTS", text)
+    }
+
+    // 2. Request native Raspberry Pi hardware audio via node_helper (mpg123 / espeak)
+    if (mode === "all" || mode === "system") {
+      this.sendSocketNotification("MMM-eswordoftheday-PLAY_SYSTEM_AUDIO", {
+        type: type, // "word" or "example"
         text: text,
       })
-      setTimeout(stopSpeakingUi, text.length > 25 ? 4000 : 2500)
-      return
     }
 
-    // 1. PRIMARY: Base64 audio pre-rendered by node_helper (works directly on Raspberry Pi / Linux without client TTS engine)
-    if (audioDataUrl && typeof audioDataUrl === "string" && audioDataUrl.startsWith("data:audio")) {
+    // 3. Play via Browser/Electron Audio Element
+    if (mode === "all" || mode === "browser") {
       try {
-        const audio = new Audio(audioDataUrl)
-        audio.onended = stopSpeakingUi
-        audio.onerror = () => {
-          this.sendSocketNotification("MMM-eswordoftheday-SYSTEM_SPEAK", { audioData: audioDataUrl, text: text })
-          this.fallbackSpeech(text, buttonElement)
+        if (!this.audioElement) {
+          this.audioElement = new Audio()
         }
-        const playPromise = audio.play()
+
+        const sourceUrl =
+          audioSource ||
+          (this.apiData && (type === "word" ? this.apiData.wordAudioUrl : this.apiData.exampleAudioUrl)) ||
+          `/MMM-eswordoftheday/tts?text=${encodeURIComponent(text)}`
+
+        this.audioElement.src = sourceUrl
+        this.audioElement.onended = stopSpeakingUi
+        this.audioElement.onerror = () => {
+          stopSpeakingUi()
+        }
+
+        const playPromise = this.audioElement.play()
         if (playPromise !== undefined) {
           playPromise.catch((err) => {
-            console.warn("[MMM-eswordoftheday] Direct audio playback error, falling back to system audio:", err)
-            this.sendSocketNotification("MMM-eswordoftheday-SYSTEM_SPEAK", { audioData: audioDataUrl, text: text })
-            this.fallbackSpeech(text, buttonElement)
+            console.warn("[MMM-eswordoftheday] Browser audio.play() prevented:", err.message)
+            stopSpeakingUi()
           })
         }
-        return
-      } catch (e) {
-        console.warn("[MMM-eswordoftheday] Exception playing data URL audio:", e)
+      } catch (err) {
+        console.warn("[MMM-eswordoftheday] Browser audio exception:", err)
+        stopSpeakingUi()
       }
     }
 
-    // 2. Secondary fallback
-    this.sendSocketNotification("MMM-eswordoftheday-SYSTEM_SPEAK", { audioData: audioDataUrl, text: text })
-    this.fallbackSpeech(text, buttonElement)
-  },
-
-  fallbackSpeech: function (text, buttonElement = null) {
-    const stopSpeakingUi = () => {
-      if (buttonElement) {
-        buttonElement.classList.remove("speaking")
-      }
-    }
-
-    // Try server/module route first
-    const ttsRoute =
-      window.location.port === "3000"
-        ? `/api/tts?text=${encodeURIComponent(text)}&lang=es`
-        : `/MMM-eswordoftheday/tts?text=${encodeURIComponent(text)}`
-
-    try {
-      const audio = new Audio(ttsRoute)
-      audio.onended = stopSpeakingUi
-      audio.onerror = () => {
-        this.synthesizeSpeech(text, buttonElement)
-      }
-      const playPromise = audio.play()
-      if (playPromise !== undefined) {
-        playPromise.catch(() => {
-          this.synthesizeSpeech(text, buttonElement)
-        })
-      }
-    } catch (e) {
-      this.synthesizeSpeech(text, buttonElement)
-    }
-  },
-
-  synthesizeSpeech: function (text, buttonElement = null) {
-    const stopSpeakingUi = () => {
-      if (buttonElement) {
-        buttonElement.classList.remove("speaking")
-      }
-    }
-
-    if (!("speechSynthesis" in window)) {
-      stopSpeakingUi()
-      return
-    }
-
-    try {
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume()
-      }
-      window.speechSynthesis.cancel()
-
-      const utterance = new SpeechSynthesisUtterance(text)
-      utterance.lang = "es-ES"
-      utterance.rate = 0.9
-
-      const voices = window.speechSynthesis.getVoices()
-      const spanishVoice = voices.find(
-        (v) => v.lang && (v.lang.toLowerCase().startsWith("es-") || v.lang.toLowerCase() === "es")
-      )
-      if (spanishVoice) {
-        utterance.voice = spanishVoice
-      }
-
-      utterance.onend = stopSpeakingUi
-      utterance.onerror = stopSpeakingUi
-      window.speechSynthesis.speak(utterance)
-    } catch (e) {
-      console.error("[MMM-eswordoftheday] Speech synthesis error:", e)
-      stopSpeakingUi()
-    }
+    // Reset button animation after appropriate duration
+    const timeoutDuration = text.length > 25 ? 4000 : 2500
+    setTimeout(stopSpeakingUi, timeoutDuration)
   },
 
   getDom: function () {
@@ -176,7 +124,7 @@ Module.register("MMM-eswordoftheday", {
         wordSpeakerBtn.setAttribute("aria-label", `Play pronunciation for ${this.apiData.word}`)
         wordSpeakerBtn.innerHTML = this.getSpeakerSvg(24)
         wordSpeakerBtn.addEventListener("click", () => {
-          this.playAudio(this.apiData.wordAudio, this.apiData.word, wordSpeakerBtn)
+          this.handlePlaySpeech("word", this.apiData.word, this.apiData.wordAudio, wordSpeakerBtn)
         })
         wordRow.appendChild(wordSpeakerBtn)
       }
@@ -211,7 +159,7 @@ Module.register("MMM-eswordoftheday", {
           esSpeakerBtn.setAttribute("aria-label", "Play pronunciation for example sentence")
           esSpeakerBtn.innerHTML = this.getSpeakerSvg(16)
           esSpeakerBtn.addEventListener("click", () => {
-            this.playAudio(this.apiData.exampleAudio, this.apiData.spanishExample, esSpeakerBtn)
+            this.handlePlaySpeech("example", this.apiData.spanishExample, this.apiData.exampleAudio, esSpeakerBtn)
           })
           esRow.appendChild(esSpeakerBtn)
         }
