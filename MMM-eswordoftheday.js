@@ -5,7 +5,6 @@ Module.register("MMM-eswordoftheday", {
     showExamples: true,
     showExampleTranslations: true,
     showAudio: true,
-    audioMode: "all", // "all", "browser", "system", "notification"
   },
 
   start: function () {
@@ -39,9 +38,9 @@ Module.register("MMM-eswordoftheday", {
   },
 
   /**
-   * Main audio handler supporting Browser Audio, System Audio (mpg123/espeak), and MMM-TTS broadcast
+   * Browser-only audio playback via HTML5 Audio
    */
-  handlePlaySpeech: function (type, text, audioSource, buttonElement = null) {
+  playAudio: function (audioSource, buttonElement = null) {
     if (buttonElement) {
       buttonElement.classList.add("speaking")
     }
@@ -52,55 +51,35 @@ Module.register("MMM-eswordoftheday", {
       }
     }
 
-    const mode = this.config.audioMode || "all"
-
-    // 1. Send MagicMirror Notification to other TTS modules (MMM-TTS, MMM-GoogleTTS)
-    if (mode === "all" || mode === "notification") {
-      this.sendNotification("MMM-TTS", text)
+    if (!audioSource) {
+      console.warn("[MMM-eswordoftheday] No audio source available.")
+      stopSpeakingUi()
+      return
     }
 
-    // 2. Request native Raspberry Pi hardware audio via node_helper (mpg123 / espeak)
-    if (mode === "all" || mode === "system") {
-      this.sendSocketNotification("MMM-eswordoftheday-PLAY_SYSTEM_AUDIO", {
-        type: type, // "word" or "example"
-        text: text,
-      })
-    }
+    try {
+      if (!this.audioElement) {
+        this.audioElement = new Audio()
+      }
 
-    // 3. Play via Browser/Electron Audio Element
-    if (mode === "all" || mode === "browser") {
-      try {
-        if (!this.audioElement) {
-          this.audioElement = new Audio()
-        }
-
-        const sourceUrl =
-          audioSource ||
-          (this.apiData && (type === "word" ? this.apiData.wordAudioUrl : this.apiData.exampleAudioUrl)) ||
-          `/MMM-eswordoftheday/tts?text=${encodeURIComponent(text)}`
-
-        this.audioElement.src = sourceUrl
-        this.audioElement.onended = stopSpeakingUi
-        this.audioElement.onerror = () => {
-          stopSpeakingUi()
-        }
-
-        const playPromise = this.audioElement.play()
-        if (playPromise !== undefined) {
-          playPromise.catch((err) => {
-            console.warn("[MMM-eswordoftheday] Browser audio.play() prevented:", err.message)
-            stopSpeakingUi()
-          })
-        }
-      } catch (err) {
-        console.warn("[MMM-eswordoftheday] Browser audio exception:", err)
+      this.audioElement.src = audioSource
+      this.audioElement.onended = stopSpeakingUi
+      this.audioElement.onerror = (e) => {
+        console.warn("[MMM-eswordoftheday] Audio playback error:", e)
         stopSpeakingUi()
       }
-    }
 
-    // Reset button animation after appropriate duration
-    const timeoutDuration = text.length > 25 ? 4000 : 2500
-    setTimeout(stopSpeakingUi, timeoutDuration)
+      const playPromise = this.audioElement.play()
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn("[MMM-eswordoftheday] Browser audio play blocked:", err.message)
+          stopSpeakingUi()
+        })
+      }
+    } catch (err) {
+      console.warn("[MMM-eswordoftheday] Browser audio exception:", err)
+      stopSpeakingUi()
+    }
   },
 
   getDom: function () {
@@ -119,12 +98,13 @@ Module.register("MMM-eswordoftheday", {
       if (this.config.showAudio !== false && this.apiData.word) {
         const wordSpeakerBtn = document.createElement("button")
         wordSpeakerBtn.type = "button"
-        wordSpeakerBtn.className = "speaker-btn speaker-btn-large"
+        wordSpeakerBtn.className = "speaker-btn"
         wordSpeakerBtn.title = "Play word pronunciation"
         wordSpeakerBtn.setAttribute("aria-label", `Play pronunciation for ${this.apiData.word}`)
-        wordSpeakerBtn.innerHTML = this.getSpeakerSvg(24)
+        wordSpeakerBtn.innerHTML = this.getSpeakerSvg(26)
         wordSpeakerBtn.addEventListener("click", () => {
-          this.handlePlaySpeech("word", this.apiData.word, this.apiData.wordAudio, wordSpeakerBtn)
+          const audioSrc = this.apiData.wordAudio || this.apiData.wordAudioUrl
+          this.playAudio(audioSrc, wordSpeakerBtn)
         })
         wordRow.appendChild(wordSpeakerBtn)
       }
@@ -154,12 +134,13 @@ Module.register("MMM-eswordoftheday", {
         if (this.config.showAudio !== false) {
           const esSpeakerBtn = document.createElement("button")
           esSpeakerBtn.type = "button"
-          esSpeakerBtn.className = "speaker-btn speaker-btn-small"
+          esSpeakerBtn.className = "speaker-btn"
           esSpeakerBtn.title = "Play sentence pronunciation"
           esSpeakerBtn.setAttribute("aria-label", "Play pronunciation for example sentence")
-          esSpeakerBtn.innerHTML = this.getSpeakerSvg(16)
+          esSpeakerBtn.innerHTML = this.getSpeakerSvg(26)
           esSpeakerBtn.addEventListener("click", () => {
-            this.handlePlaySpeech("example", this.apiData.spanishExample, this.apiData.exampleAudio, esSpeakerBtn)
+            const audioSrc = this.apiData.exampleAudio || this.apiData.exampleAudioUrl
+            this.playAudio(audioSrc, esSpeakerBtn)
           })
           esRow.appendChild(esSpeakerBtn)
         }
